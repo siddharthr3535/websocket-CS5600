@@ -82,17 +82,16 @@ void print_usage(const char* prog) {
   printf("Usage: %s [-h host] [-p port] COMMAND arguments...\n\n", prog);
   printf("Commands:\n");
   printf("  WRITE local-file-path [remote-file-path]\n");
-  printf("  GET   remote-file-path [local-file-path]\n\n");
+  printf("  GET   remote-file-path [local-file-path]\n");
+  printf("  RM    remote-path\n\n");
   printf("Options:\n");
   printf("  -h host    Server hostname or IP (default: %s)\n", DEFAULT_HOST);
   printf("  -p port    Server port (default: %d)\n\n", DEFAULT_PORT);
   printf("Examples:\n");
   printf("  %s WRITE data/localfoo.txt folder/foo.txt\n", prog);
-  printf("  %s WRITE myfile.txt\n", prog);
   printf("  %s GET folder/test.txt downloaded.txt\n", prog);
-  printf("  %s GET folder/test.txt\n", prog);
-  printf("  %s -h 192.168.1.100 -p 2000 WRITE test.txt remote/test.txt\n",
-         prog);
+  printf("  %s RM folder/test.txt\n", prog);
+  printf("  %s RM folder\n", prog);
 }
 
 /*
@@ -361,7 +360,38 @@ int connect_to_server(const char* host, int port) {
 
   return socket_desc;
 }
+// Execute RM command: delete a file or folder on the server
 
+int do_rm(int socket_desc, const char* remote_path) {
+  char buffer[BUFFER_SIZE];
+  int n;
+
+  printf("Deleting: %s\n", remote_path);
+
+  memset(buffer, 0, sizeof(buffer));
+  snprintf(buffer, sizeof(buffer), "RM %s", remote_path);
+
+  if (send(socket_desc, buffer, strlen(buffer), 0) < 0) {
+    printf("error!Unable to send command\n");
+    return -1;
+  }
+
+  // Receive response
+  memset(buffer, 0, sizeof(buffer));
+  n = recv(socket_desc, buffer, sizeof(buffer), 0);
+  if (n <= 0) {
+    printf("error!No response from server\n");
+    return -1;
+  }
+
+  printf("Server response: %s\n", buffer);
+
+  if (strstr(buffer, "success!") != NULL) {
+    return 0;
+  }
+
+  return -1;
+}
 int main(int argc, char* argv[]) {
   int socket_desc;
   char* host = DEFAULT_HOST;
@@ -466,8 +496,29 @@ int main(int argc, char* argv[]) {
     close(socket_desc);
 
     return (result == 0) ? 0 : 1;
-  } else {
-    printf("Error: Unknown command '%s'\n\n", command);
+  } else if (strcmp(command, "RM") == 0) {
+    if (optind + 1 >= argc) {
+      printf("error! RM requires remote path\n\n");
+      print_usage(argv[0]);
+      return 1;
+    }
+
+    char* remote_path = argv[optind + 1];
+
+    socket_desc = connect_to_server(host, port);
+    if (socket_desc < 0) {
+      return 1;
+    }
+
+    int result = do_rm(socket_desc, remote_path);
+
+    close(socket_desc);
+
+    return (result == 0) ? 0 : 1;
+  }
+
+  else {
+    printf("error!Unknown command '%s'\n\n", command);
     print_usage(argv[0]);
     return 1;
   }

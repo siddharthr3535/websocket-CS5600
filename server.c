@@ -69,16 +69,8 @@ void get_directory_path(const char* filepath, char* dirpath) {
   }
 }
 
-/*
- * Handle WRITE command from client
- * Protocol:
- *   1. Server receives: "WRITE <remote_path>"
- *   2. Server sends: "READY"
- *   3. Server receives: "<file_size>"
- *   4. Server sends: "SIZE_OK"
- *   5. Server receives: <file_data>
- *   6. Server sends: "SUCCESS" or "ERROR"
- */
+// Handle WRITE command from client
+
 int handle_write_command(int client_sock, const char* remote_path) {
   char buffer[8196];
   char full_path[512];
@@ -154,14 +146,8 @@ int handle_write_command(int client_sock, const char* remote_path) {
   return 0;
 }
 
-/*
- * Handle GET command from client
- * Protocol:
- *   1. Server receives: "GET <remote_path>"
- *   2. Server sends: "SIZE <file_size>" or "ERROR <message>"
- *   3. Client sends: "READY"
- *   4. Server sends: <file_data>
- */
+// Handle GET command from client
+
 int handle_get_command(int client_sock, const char* remote_path) {
   char buffer[8196];
   char full_path[512];
@@ -247,7 +233,62 @@ int handle_get_command(int client_sock, const char* remote_path) {
 
   return 0;
 }
+int handle_rm_command(int client_sock, const char* remote_path) {
+  char buffer[8196];
+  char full_path[512];
+  struct stat st;
 
+  // Build full path: ROOT_DIR/remote_path
+  snprintf(full_path, sizeof(full_path), "%s/%s", "./server_root", remote_path);
+
+  // Delete file or directory
+  pthread_mutex_lock(&fs_mutex);
+
+  // Check if path exists
+  if (stat(full_path, &st) != 0) {
+    pthread_mutex_unlock(&fs_mutex);
+    snprintf(buffer, sizeof(buffer), "error! path not found '%s'", remote_path);
+    send(client_sock, buffer, strlen(buffer), 0);
+    return -1;
+  }
+
+  int result;
+
+  if (S_ISDIR(st.st_mode)) {
+    result = rmdir(full_path);
+    if (result != 0) {
+      pthread_mutex_unlock(&fs_mutex);
+      if (errno == ENOTEMPTY) {
+        snprintf(buffer, sizeof(buffer), "error! directory not empty '%s'",
+                 remote_path);
+      } else {
+        snprintf(buffer, sizeof(buffer), "error!cannot remove directory '%s'",
+                 remote_path);
+      }
+      send(client_sock, buffer, strlen(buffer), 0);
+      return -1;
+    }
+    printf("  directory removed: %s\n", full_path);
+  } else {
+    // Remove file
+    result = unlink(full_path);
+    if (result != 0) {
+      pthread_mutex_unlock(&fs_mutex);
+      snprintf(buffer, sizeof(buffer), "error! Cannot remove file '%s'",
+               remote_path);
+      send(client_sock, buffer, strlen(buffer), 0);
+      return -1;
+    }
+    printf("  file removed: %s\n", full_path);
+  }
+
+  pthread_mutex_unlock(&fs_mutex);
+
+  snprintf(buffer, sizeof(buffer), "successfully removed '%s'", remote_path);
+  send(client_sock, buffer, strlen(buffer), 0);
+
+  return 0;
+}
 // Client handler thread function
 void* client_handler(void* arg) {
   client_info_t* info = (client_info_t*)arg;
@@ -297,9 +338,17 @@ void* client_handler(void* arg) {
       printf("Processing GET: %s\n", remote_path);
       handle_get_command(client_sock, remote_path);
     }
+  } else if (strcmp(command, "RM") == 0) {
+    if (strlen(remote_path) == 0) {
+      char* error_msg = "error! Missing remote path";
+      send(client_sock, error_msg, strlen(error_msg), 0);
+    } else {
+      printf("Processing RM: %s\n", remote_path);
+      handle_rm_command(client_sock, remote_path);
+    }
   } else {
     char error_msg[8196];
-    snprintf(error_msg, sizeof(error_msg), "ERROR: Unknown command '%s'",
+    snprintf(error_msg, sizeof(error_msg), "error!Unknown command '%s'",
              command);
     send(client_sock, error_msg, strlen(error_msg), 0);
   }
@@ -311,6 +360,7 @@ void* client_handler(void* arg) {
 
   return NULL;
 }
+// Handle RM command from client
 
 int main(void) {
   int socket_desc;
