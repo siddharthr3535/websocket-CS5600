@@ -1,14 +1,17 @@
 /*
- * rfs.c -- Remote File System Client
+ * client.c -- Remote File System Client
  *
  * adapted from:
  *   https://www.educative.io/answers/how-to-implement-tcp-sockets-in-c
  *
- * Extended for Question 1: WRITE command to send files to server
-
+ * Extended for Question 1 and 2: WRITE and GET commands
+ *
+ * Usage: rfs WRITE local-file-path [remote-file-path]
+ *        rfs GET remote-file-path [local-file-path]
  */
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,17 +34,63 @@ long get_file_size(const char* filename) {
   return -1;
 }
 
-// Print usage information
+// create directories recursively
+int create_directories(const char* path) {
+  char tmp[MAX_PATH];
+  char* p = NULL;
+  size_t len;
+
+  snprintf(tmp, sizeof(tmp), "%s", path);
+  len = strlen(tmp);
+
+  if (tmp[len - 1] == '/') {
+    tmp[len - 1] = '\0';
+  }
+
+  for (p = tmp + 1; *p; p++) {
+    if (*p == '/') {
+      *p = '\0';
+      if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+        return -1;
+      }
+      *p = '/';
+    }
+  }
+
+  if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+    return -1;
+  }
+
+  return 0;
+}
+
+// extract directory path from file path
+void get_directory_path(const char* filepath, char* dirpath) {
+  strncpy(dirpath, filepath, MAX_PATH - 1);
+  dirpath[MAX_PATH - 1] = '\0';
+
+  char* last_slash = strrchr(dirpath, '/');
+  if (last_slash != NULL) {
+    *last_slash = '\0';
+  } else {
+    dirpath[0] = '\0';
+  }
+}
+
+// print usage information
 void print_usage(const char* prog) {
   printf("Usage: %s [-h host] [-p port] COMMAND arguments...\n\n", prog);
   printf("Commands:\n");
-  printf("  WRITE local-file-path [remote-file-path]\n\n");
+  printf("  WRITE local-file-path [remote-file-path]\n");
+  printf("  GET   remote-file-path [local-file-path]\n\n");
   printf("Options:\n");
   printf("  -h host    Server hostname or IP (default: %s)\n", DEFAULT_HOST);
   printf("  -p port    Server port (default: %d)\n\n", DEFAULT_PORT);
   printf("Examples:\n");
   printf("  %s WRITE data/localfoo.txt folder/foo.txt\n", prog);
   printf("  %s WRITE myfile.txt\n", prog);
+  printf("  %s GET folder/test.txt downloaded.txt\n", prog);
+  printf("  %s GET folder/test.txt\n", prog);
   printf("  %s -h 192.168.1.100 -p 2000 WRITE test.txt remote/test.txt\n",
          prog);
 }
@@ -63,12 +112,14 @@ int do_write(int socket_desc, const char* local_path, const char* remote_path) {
   long bytes_sent = 0;
   int n;
 
+  // Check if local file exists and get its size
   file_size = get_file_size(local_path);
   if (file_size < 0) {
     printf("Error: Cannot access local file '%s'\n", local_path);
     return -1;
   }
 
+  // Open local file for reading
   fp = fopen(local_path, "rb");
   if (fp == NULL) {
     printf("Error: Cannot open local file '%s'\n", local_path);
@@ -88,6 +139,7 @@ int do_write(int socket_desc, const char* local_path, const char* remote_path) {
     return -1;
   }
 
+  // Wait for READY response
   memset(buffer, 0, sizeof(buffer));
   n = recv(socket_desc, buffer, sizeof(buffer), 0);
   if (n <= 0 || strstr(buffer, "READY") == NULL) {
@@ -96,6 +148,7 @@ int do_write(int socket_desc, const char* local_path, const char* remote_path) {
     return -1;
   }
 
+  // Send file size
   memset(buffer, 0, sizeof(buffer));
   snprintf(buffer, sizeof(buffer), "%ld", file_size);
 
@@ -105,6 +158,7 @@ int do_write(int socket_desc, const char* local_path, const char* remote_path) {
     return -1;
   }
 
+  // Wait for SIZE_OK response
   memset(buffer, 0, sizeof(buffer));
   n = recv(socket_desc, buffer, sizeof(buffer), 0);
   if (n <= 0 || strstr(buffer, "SIZE_OK") == NULL) {
@@ -113,6 +167,7 @@ int do_write(int socket_desc, const char* local_path, const char* remote_path) {
     return -1;
   }
 
+  // Send file data
   printf("Transferring...\n");
   while (bytes_sent < file_size) {
     size_t to_read = sizeof(buffer);
@@ -136,6 +191,7 @@ int do_write(int socket_desc, const char* local_path, const char* remote_path) {
 
     bytes_sent += sent;
 
+    // Show progress
     int progress = (int)((bytes_sent * 100) / file_size);
     printf("\rProgress: %ld/%ld bytes (%d%%)", bytes_sent, file_size, progress);
     fflush(stdout);
@@ -144,6 +200,7 @@ int do_write(int socket_desc, const char* local_path, const char* remote_path) {
 
   fclose(fp);
 
+  // Receive final response
   memset(buffer, 0, sizeof(buffer));
   n = recv(socket_desc, buffer, sizeof(buffer), 0);
   if (n > 0) {
@@ -156,13 +213,162 @@ int do_write(int socket_desc, const char* local_path, const char* remote_path) {
   return -1;
 }
 
-int main(int argc, char* argv[]) {
+/*
+ * Execute GET command: retrieve a file from the server
+ * Protocol:
+ *   1. Client sends: "GET <remote_path>"
+ *   2. Client receives: "SIZE <file_size>" or "ERROR <message>"
+ *   3. Client sends: "READY"
+ *   4. Client receives: <file_data>
+ */
+int do_get(int socket_desc, const char* remote_path, const char* local_path) {
+  char buffer[BUFFER_SIZE];
+  char dir_path[MAX_PATH];
+  FILE* fp;
+  long file_size;
+  long bytes_received = 0;
+  int n;
+
+  printf("Requesting file: %s\n", remote_path);
+  printf("Local path: %s\n", local_path);
+
+  // Send GET command with remote path
+  memset(buffer, 0, sizeof(buffer));
+  snprintf(buffer, sizeof(buffer), "GET %s", remote_path);
+
+  if (send(socket_desc, buffer, strlen(buffer), 0) < 0) {
+    printf("Error: Unable to send command\n");
+    return -1;
+  }
+
+  // Receive SIZE response or ERROR
+  memset(buffer, 0, sizeof(buffer));
+  n = recv(socket_desc, buffer, sizeof(buffer), 0);
+  if (n <= 0) {
+    printf("Error: No response from server\n");
+    return -1;
+  }
+
+  // Check for error
+  if (strncmp(buffer, "ERROR", 5) == 0) {
+    printf("Server error: %s\n", buffer);
+    return -1;
+  }
+
+  // Parse file size from "SIZE <size>"
+  if (strncmp(buffer, "SIZE", 4) != 0) {
+    printf("Error: Unexpected response: %s\n", buffer);
+    return -1;
+  }
+
+  file_size = atol(buffer + 5);  // Skip "SIZE "
+  printf("File size: %ld bytes\n", file_size);
+
+  // Create local directory if needed
+  get_directory_path(local_path, dir_path);
+  if (strlen(dir_path) > 0) {
+    if (create_directories(dir_path) != 0) {
+      printf("Error: Cannot create local directory '%s'\n", dir_path);
+      return -1;
+    }
+  }
+
+  // Open local file for writing
+  fp = fopen(local_path, "wb");
+  if (fp == NULL) {
+    printf("Error: Cannot create local file '%s'\n", local_path);
+    return -1;
+  }
+
+  // Send READY signal
+  strcpy(buffer, "READY");
+  if (send(socket_desc, buffer, strlen(buffer), 0) < 0) {
+    printf("Error: Unable to send READY\n");
+    fclose(fp);
+    return -1;
+  }
+
+  // Receive file data
+  printf("Receiving...\n");
+  while (bytes_received < file_size) {
+    memset(buffer, 0, sizeof(buffer));
+    n = recv(socket_desc, buffer, sizeof(buffer), 0);
+    if (n <= 0) {
+      printf("\nError: Connection lost during transfer\n");
+      fclose(fp);
+      return -1;
+    }
+
+    fwrite(buffer, 1, n, fp);
+    bytes_received += n;
+
+    // Show progress
+    int progress = (int)((bytes_received * 100) / file_size);
+    printf("\rProgress: %ld/%ld bytes (%d%%)", bytes_received, file_size,
+           progress);
+    fflush(stdout);
+  }
+  printf("\n");
+
+  fclose(fp);
+
+  printf("File saved successfully: %s\n", local_path);
+  return 0;
+}
+
+/*
+ * Connect to server
+ */
+int connect_to_server(const char* host, int port) {
   int socket_desc;
   struct sockaddr_in server_addr;
+
+  // Create socket
+  socket_desc = socket(AF_INET, SOCK_STREAM, 0);
+
+  if (socket_desc < 0) {
+    printf("Unable to create socket\n");
+    return -1;
+  }
+
+  // Set port and IP
+  server_addr.sin_family = AF_INET;
+  server_addr.sin_port = htons(port);
+
+  // Convert hostname/IP to address
+  if (inet_pton(AF_INET, host, &server_addr.sin_addr) <= 0) {
+    // Try resolving as hostname
+    struct hostent* he = gethostbyname(host);
+    if (he == NULL) {
+      printf("Invalid address or hostname: %s\n", host);
+      close(socket_desc);
+      return -1;
+    }
+    memcpy(&server_addr.sin_addr, he->h_addr_list[0], he->h_length);
+  }
+
+  printf("Connecting to %s:%d...\n", host, port);
+
+  // Send connection request to server
+  if (connect(socket_desc, (struct sockaddr*)&server_addr,
+              sizeof(server_addr)) < 0) {
+    printf("Unable to connect to server\n");
+    close(socket_desc);
+    return -1;
+  }
+
+  printf("Connected to server successfully\n\n");
+
+  return socket_desc;
+}
+
+int main(int argc, char* argv[]) {
+  int socket_desc;
   char* host = DEFAULT_HOST;
   int port = DEFAULT_PORT;
   int opt;
 
+  // Parse command line options
   while ((opt = getopt(argc, argv, "h:p:")) != -1) {
     switch (opt) {
       case 'h':
@@ -177,6 +383,7 @@ int main(int argc, char* argv[]) {
     }
   }
 
+  // Check for command
   if (optind >= argc) {
     print_usage(argv[0]);
     return 1;
@@ -184,7 +391,9 @@ int main(int argc, char* argv[]) {
 
   char* command = argv[optind];
 
+  // Handle WRITE command
   if (strcmp(command, "WRITE") == 0) {
+    // Need at least local file path
     if (optind + 1 >= argc) {
       printf("Error: WRITE requires local-file-path\n\n");
       print_usage(argv[0]);
@@ -194,49 +403,69 @@ int main(int argc, char* argv[]) {
     char* local_path = argv[optind + 1];
     char* remote_path;
 
+    // Use local path as remote path if not specified
     if (optind + 2 < argc) {
       remote_path = argv[optind + 2];
     } else {
       remote_path = local_path;
     }
 
-    socket_desc = socket(AF_INET, SOCK_STREAM, 0);
-
+    // Connect to server
+    socket_desc = connect_to_server(host, port);
     if (socket_desc < 0) {
-      printf("Unable to create socket\n");
-      return -1;
+      return 1;
     }
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
-
-    if (inet_pton(AF_INET, host, &server_addr.sin_addr) <= 0) {
-      struct hostent* he = gethostbyname(host);
-      if (he == NULL) {
-        printf("Invalid address or hostname: %s\n", host);
-        close(socket_desc);
-        return -1;
-      }
-      memcpy(&server_addr.sin_addr, he->h_addr_list[0], he->h_length);
-    }
-
-    printf("Connecting to %s:%d...\n", host, port);
-
-    if (connect(socket_desc, (struct sockaddr*)&server_addr,
-                sizeof(server_addr)) < 0) {
-      printf("Unable to connect to server\n");
-      close(socket_desc);
-      return -1;
-    }
-
-    printf("Connected to server successfully\n\n");
-
+    // Execute WRITE
     int result = do_write(socket_desc, local_path, remote_path);
 
+    // Close the socket
     close(socket_desc);
 
     return (result == 0) ? 0 : 1;
+  }
+  // Handle GET command
+  else if (strcmp(command, "GET") == 0) {
+    // Need at least remote file path
+    if (optind + 1 >= argc) {
+      printf("Error: GET requires remote-file-path\n\n");
+      print_usage(argv[0]);
+      return 1;
+    }
 
+    char* remote_path = argv[optind + 1];
+    char* local_path;
+    char default_local[MAX_PATH];
+
+    // Use filename from remote path if local path not specified
+    if (optind + 2 < argc) {
+      local_path = argv[optind + 2];
+    } else {
+      // Extract filename from remote path (save to current directory)
+      const char* filename = strrchr(remote_path, '/');
+      if (filename != NULL) {
+        filename++;  // Skip the '/'
+      } else {
+        filename = remote_path;
+      }
+      strncpy(default_local, filename, MAX_PATH - 1);
+      default_local[MAX_PATH - 1] = '\0';
+      local_path = default_local;
+    }
+
+    // Connect to server
+    socket_desc = connect_to_server(host, port);
+    if (socket_desc < 0) {
+      return 1;
+    }
+
+    // Execute GET
+    int result = do_get(socket_desc, remote_path, local_path);
+
+    // Close the socket
+    close(socket_desc);
+
+    return (result == 0) ? 0 : 1;
   } else {
     printf("Error: Unknown command '%s'\n\n", command);
     print_usage(argv[0]);

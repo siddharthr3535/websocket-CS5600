@@ -4,7 +4,8 @@
  * adapted from:
  *   https://www.educative.io/answers/how-to-implement-tcp-sockets-in-c
  *
- * Extended for Question 1: WRITE command support with concurrency control
+ * Extended for Question 1 & 2: WRITE and GET command support with concurrency
+ * control
  */
 
 #include <arpa/inet.h>
@@ -17,7 +18,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-// Mutex for protecting file system operations
 pthread_mutex_t fs_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Structure to pass client information to handler thread
@@ -26,9 +26,7 @@ typedef struct {
   struct sockaddr_in client_addr;
 } client_info_t;
 
-/*
- * Create directories recursively (like mkdir -p)
- */
+// create directories recursively
 int create_directories(const char* path) {
   char tmp[512];
   char* p = NULL;
@@ -58,9 +56,7 @@ int create_directories(const char* path) {
   return 0;
 }
 
-/*
- * Extract directory path from a full file path
- */
+// extract directory path from file path
 void get_directory_path(const char* filepath, char* dirpath) {
   strncpy(dirpath, filepath, 512 - 1);
   dirpath[512 - 1] = '\0';
@@ -92,13 +88,10 @@ int handle_write_command(int client_sock, const char* remote_path) {
   long bytes_received = 0;
   int n;
 
-  // Build full path: "./server_root"/remote_path
   snprintf(full_path, sizeof(full_path), "%s/%s", "./server_root", remote_path);
 
-  // Extract and create directory structure
   get_directory_path(full_path, dir_path);
 
-  // CRITICAL REGION: Creating directories
   pthread_mutex_lock(&fs_mutex);
   if (strlen(dir_path) > 0) {
     if (create_directories(dir_path) != 0) {
@@ -110,13 +103,11 @@ int handle_write_command(int client_sock, const char* remote_path) {
   }
   pthread_mutex_unlock(&fs_mutex);
 
-  // Send READY signal
   strcpy(buffer, "READY");
   if (send(client_sock, buffer, strlen(buffer), 0) < 0) {
     return -1;
   }
 
-  // Receive file size
   memset(buffer, 0, sizeof(buffer));
   n = recv(client_sock, buffer, sizeof(buffer), 0);
   if (n <= 0) {
@@ -125,13 +116,11 @@ int handle_write_command(int client_sock, const char* remote_path) {
   file_size = atol(buffer);
   printf("  File size: %ld bytes\n", file_size);
 
-  // Send SIZE_OK acknowledgment
   strcpy(buffer, "SIZE_OK");
   if (send(client_sock, buffer, strlen(buffer), 0) < 0) {
     return -1;
   }
 
-  // CRITICAL REGION: Writing file
   pthread_mutex_lock(&fs_mutex);
 
   fp = fopen(full_path, "wb");
@@ -142,7 +131,6 @@ int handle_write_command(int client_sock, const char* remote_path) {
     return -1;
   }
 
-  // Receive and write file data
   while (bytes_received < file_size) {
     memset(buffer, 0, sizeof(buffer));
     n = recv(client_sock, buffer, sizeof(buffer), 0);
@@ -160,7 +148,6 @@ int handle_write_command(int client_sock, const char* remote_path) {
 
   printf("  File saved: %s\n", full_path);
 
-  // Send success response
   strcpy(buffer, "SUCCESS: File written successfully");
   send(client_sock, buffer, strlen(buffer), 0);
 
@@ -168,8 +155,100 @@ int handle_write_command(int client_sock, const char* remote_path) {
 }
 
 /*
- * Thread function to handle a single client connection
+ * Handle GET command from client
+ * Protocol:
+ *   1. Server receives: "GET <remote_path>"
+ *   2. Server sends: "SIZE <file_size>" or "ERROR <message>"
+ *   3. Client sends: "READY"
+ *   4. Server sends: <file_data>
  */
+int handle_get_command(int client_sock, const char* remote_path) {
+  char buffer[8196];
+  char full_path[512];
+  FILE* fp;
+  long file_size;
+  long bytes_sent = 0;
+  int n;
+  struct stat st;
+
+  snprintf(full_path, sizeof(full_path), "%s/%s", "./server_root", remote_path);
+
+  pthread_mutex_lock(&fs_mutex);
+
+  if (stat(full_path, &st) != 0) {
+    pthread_mutex_unlock(&fs_mutex);
+    snprintf(buffer, sizeof(buffer), "ERROR: File not found '%s'", remote_path);
+    send(client_sock, buffer, strlen(buffer), 0);
+    return -1;
+  }
+
+  if (S_ISDIR(st.st_mode)) {
+    pthread_mutex_unlock(&fs_mutex);
+    snprintf(buffer, sizeof(buffer), "ERROR: Path is a directory '%s'",
+             remote_path);
+    send(client_sock, buffer, strlen(buffer), 0);
+    return -1;
+  }
+
+  file_size = st.st_size;
+
+  fp = fopen(full_path, "rb");
+  if (fp == NULL) {
+    pthread_mutex_unlock(&fs_mutex);
+    snprintf(buffer, sizeof(buffer), "ERROR: Cannot open file '%s'",
+             remote_path);
+    send(client_sock, buffer, strlen(buffer), 0);
+    return -1;
+  }
+
+  pthread_mutex_unlock(&fs_mutex);
+
+  printf("  File size: %ld bytes\n", file_size);
+
+  snprintf(buffer, sizeof(buffer), "SIZE %ld", file_size);
+  if (send(client_sock, buffer, strlen(buffer), 0) < 0) {
+    fclose(fp);
+    return -1;
+  }
+
+  memset(buffer, 0, sizeof(buffer));
+  n = recv(client_sock, buffer, sizeof(buffer), 0);
+  if (n <= 0 || strstr(buffer, "READY") == NULL) {
+    fclose(fp);
+    return -1;
+  }
+
+  pthread_mutex_lock(&fs_mutex);
+
+  while (bytes_sent < file_size) {
+    size_t to_read = sizeof(buffer);
+    if (file_size - bytes_sent < (long)to_read) {
+      to_read = file_size - bytes_sent;
+    }
+
+    size_t bytes_read = fread(buffer, 1, to_read, fp);
+    if (bytes_read <= 0) {
+      break;
+    }
+
+    int sent = send(client_sock, buffer, bytes_read, 0);
+    if (sent < 0) {
+      fclose(fp);
+      pthread_mutex_unlock(&fs_mutex);
+      return -1;
+    }
+    bytes_sent += sent;
+  }
+
+  fclose(fp);
+  pthread_mutex_unlock(&fs_mutex);
+
+  printf("  File sent: %s (%ld bytes)\n", full_path, bytes_sent);
+
+  return 0;
+}
+
+// Client handler thread function
 void* client_handler(void* arg) {
   client_info_t* info = (client_info_t*)arg;
   int client_sock = info->client_sock;
@@ -181,7 +260,6 @@ void* client_handler(void* arg) {
          inet_ntoa(info->client_addr.sin_addr),
          ntohs(info->client_addr.sin_port));
 
-  // Receive client's command
   memset(client_message, 0, sizeof(client_message));
   if (recv(client_sock, client_message, sizeof(client_message), 0) < 0) {
     printf("Couldn't receive command\n");
@@ -192,7 +270,6 @@ void* client_handler(void* arg) {
 
   printf("Received: %s\n", client_message);
 
-  // Parse command and path
   memset(command, 0, sizeof(command));
   memset(remote_path, 0, sizeof(remote_path));
 
@@ -204,7 +281,6 @@ void* client_handler(void* arg) {
     return NULL;
   }
 
-  // Handle WRITE command
   if (strcmp(command, "WRITE") == 0) {
     if (strlen(remote_path) == 0) {
       char* error_msg = "ERROR: Missing remote path";
@@ -213,6 +289,14 @@ void* client_handler(void* arg) {
       printf("Processing WRITE: %s\n", remote_path);
       handle_write_command(client_sock, remote_path);
     }
+  } else if (strcmp(command, "GET") == 0) {
+    if (strlen(remote_path) == 0) {
+      char* error_msg = "ERROR: Missing remote path";
+      send(client_sock, error_msg, strlen(error_msg), 0);
+    } else {
+      printf("Processing GET: %s\n", remote_path);
+      handle_get_command(client_sock, remote_path);
+    }
   } else {
     char error_msg[8196];
     snprintf(error_msg, sizeof(error_msg), "ERROR: Unknown command '%s'",
@@ -220,7 +304,6 @@ void* client_handler(void* arg) {
     send(client_sock, error_msg, strlen(error_msg), 0);
   }
 
-  // Close client connection
   close(client_sock);
   printf("Client disconnected (IP: %s)\n",
          inet_ntoa(info->client_addr.sin_addr));
@@ -234,10 +317,8 @@ int main(void) {
   socklen_t client_size;
   struct sockaddr_in server_addr, client_addr;
 
-  // Create server root directory
   mkdir("./server_root", 0755);
 
-  // Create socket
   socket_desc = socket(AF_INET, SOCK_STREAM, 0);
 
   if (socket_desc < 0) {
@@ -246,16 +327,13 @@ int main(void) {
   }
   printf("Socket created successfully\n");
 
-  // Allow socket address reuse
   int opt = 1;
   setsockopt(socket_desc, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-  // Set port and IP
   server_addr.sin_family = AF_INET;
   server_addr.sin_port = htons(2000);
-  server_addr.sin_addr.s_addr = INADDR_ANY;  // Accept from any interface
+  server_addr.sin_addr.s_addr = INADDR_ANY;
 
-  // Bind to the set port and IP
   if (bind(socket_desc, (struct sockaddr*)&server_addr, sizeof(server_addr)) <
       0) {
     printf("Couldn't bind to the port\n");
@@ -264,7 +342,6 @@ int main(void) {
   }
   printf("Done with binding\n");
 
-  // Listen for clients (backlog of 10)
   if (listen(socket_desc, 10) < 0) {
     printf("Error while listening\n");
     close(socket_desc);
@@ -285,7 +362,6 @@ int main(void) {
       continue;
     }
 
-    // Allocate client info for the thread
     client_info_t* client_info = malloc(sizeof(client_info_t));
     if (client_info == NULL) {
       printf("Memory allocation failed\n");
@@ -296,7 +372,6 @@ int main(void) {
     client_info->client_sock = client_sock;
     client_info->client_addr = client_addr;
 
-    // Create a new thread for this client
     pthread_t tid;
     if (pthread_create(&tid, NULL, client_handler, client_info) != 0) {
       printf("Failed to create thread\n");
@@ -305,7 +380,6 @@ int main(void) {
       continue;
     }
 
-    // Detach thread so it cleans up automatically when done
     pthread_detach(tid);
   }
 
