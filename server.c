@@ -4,8 +4,7 @@
  * adapted from:
  *   https://www.educative.io/answers/how-to-implement-tcp-sockets-in-c
  *
- * Extended for Question 1 & 2: WRITE and GET command support with concurrency
- * control
+ * Questions 1-4: WRITE, GET, RM with per-file locking
  */
 
 #include <arpa/inet.h>
@@ -18,7 +17,22 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-pthread_mutex_t fs_mutex = PTHREAD_MUTEX_INITIALIZER;
+#define PORT 2000
+#define BUFFER_SIZE 8196
+#define MAX_PATH 512
+#define ROOT_DIR "./server_root"
+#define MAX_FILE_LOCKS 100
+
+// Structure for per-file locking
+typedef struct {
+  char filepath[MAX_PATH];
+  pthread_mutex_t mutex;
+  int in_use;
+} file_lock_t;
+
+// Global file lock table
+file_lock_t file_locks[MAX_FILE_LOCKS];
+pthread_mutex_t lock_table_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Structure to pass client information to handler thread
 typedef struct {
@@ -26,9 +40,59 @@ typedef struct {
   struct sockaddr_in client_addr;
 } client_info_t;
 
-// create directories recursively
+// Initialize file lock table
+void init_file_locks() {
+  for (int i = 0; i < MAX_FILE_LOCKS; i++) {
+    file_locks[i].filepath[0] = '\0';
+    file_locks[i].in_use = 0;
+    pthread_mutex_init(&file_locks[i].mutex, NULL);
+  }
+}
+
+// Get or create a lock for a specific file
+
+pthread_mutex_t* get_file_lock(const char* filepath) {
+  pthread_mutex_lock(&lock_table_mutex);
+
+  for (int i = 0; i < MAX_FILE_LOCKS; i++) {
+    if (file_locks[i].in_use && strcmp(file_locks[i].filepath, filepath) == 0) {
+      pthread_mutex_unlock(&lock_table_mutex);
+      return &file_locks[i].mutex;
+    }
+  }
+
+  for (int i = 0; i < MAX_FILE_LOCKS; i++) {
+    if (!file_locks[i].in_use) {
+      strncpy(file_locks[i].filepath, filepath, MAX_PATH - 1);
+      file_locks[i].filepath[MAX_PATH - 1] = '\0';
+      file_locks[i].in_use = 1;
+      pthread_mutex_unlock(&lock_table_mutex);
+      return &file_locks[i].mutex;
+    }
+  }
+
+  pthread_mutex_unlock(&lock_table_mutex);
+  return NULL;
+}
+
+// release file lcok
+void release_file_lock(const char* filepath) {
+  pthread_mutex_lock(&lock_table_mutex);
+
+  for (int i = 0; i < MAX_FILE_LOCKS; i++) {
+    if (file_locks[i].in_use && strcmp(file_locks[i].filepath, filepath) == 0) {
+      file_locks[i].in_use = 0;
+      file_locks[i].filepath[0] = '\0';
+      break;
+    }
+  }
+
+  pthread_mutex_unlock(&lock_table_mutex);
+}
+
+// Create directories recursively
 int create_directories(const char* path) {
-  char tmp[512];
+  char tmp[MAX_PATH];
   char* p = NULL;
   size_t len;
 
@@ -56,10 +120,10 @@ int create_directories(const char* path) {
   return 0;
 }
 
-// extract directory path from file path
+// Extract directory path from file path
 void get_directory_path(const char* filepath, char* dirpath) {
-  strncpy(dirpath, filepath, 512 - 1);
-  dirpath[512 - 1] = '\0';
+  strncpy(dirpath, filepath, MAX_PATH - 1);
+  dirpath[MAX_PATH - 1] = '\0';
 
   char* last_slash = strrchr(dirpath, '/');
   if (last_slash != NULL) {
@@ -70,30 +134,29 @@ void get_directory_path(const char* filepath, char* dirpath) {
 }
 
 // Handle WRITE command from client
-
 int handle_write_command(int client_sock, const char* remote_path) {
-  char buffer[8196];
-  char full_path[512];
-  char dir_path[512];
+  char buffer[BUFFER_SIZE];
+  char full_path[MAX_PATH];
+  char dir_path[MAX_PATH];
   FILE* fp;
   long file_size;
   long bytes_received = 0;
   int n;
 
-  snprintf(full_path, sizeof(full_path), "%s/%s", "./server_root", remote_path);
-
+  snprintf(full_path, sizeof(full_path), "%s/%s", ROOT_DIR, remote_path);
   get_directory_path(full_path, dir_path);
 
-  pthread_mutex_lock(&fs_mutex);
+  // Lock for directory creation
+  pthread_mutex_lock(&lock_table_mutex);
   if (strlen(dir_path) > 0) {
     if (create_directories(dir_path) != 0) {
-      pthread_mutex_unlock(&fs_mutex);
+      pthread_mutex_unlock(&lock_table_mutex);
       strcpy(buffer, "ERROR: Failed to create directory");
       send(client_sock, buffer, strlen(buffer), 0);
       return -1;
     }
   }
-  pthread_mutex_unlock(&fs_mutex);
+  pthread_mutex_unlock(&lock_table_mutex);
 
   strcpy(buffer, "READY");
   if (send(client_sock, buffer, strlen(buffer), 0) < 0) {
@@ -113,11 +176,18 @@ int handle_write_command(int client_sock, const char* remote_path) {
     return -1;
   }
 
-  pthread_mutex_lock(&fs_mutex);
+  pthread_mutex_t* file_mutex = get_file_lock(full_path);
+  if (file_mutex == NULL) {
+    strcpy(buffer, "ERROR: Server busy");
+    send(client_sock, buffer, strlen(buffer), 0);
+    return -1;
+  }
+
+  pthread_mutex_lock(file_mutex);
 
   fp = fopen(full_path, "wb");
   if (fp == NULL) {
-    pthread_mutex_unlock(&fs_mutex);
+    pthread_mutex_unlock(file_mutex);
     strcpy(buffer, "ERROR: Cannot create file");
     send(client_sock, buffer, strlen(buffer), 0);
     return -1;
@@ -128,7 +198,7 @@ int handle_write_command(int client_sock, const char* remote_path) {
     n = recv(client_sock, buffer, sizeof(buffer), 0);
     if (n <= 0) {
       fclose(fp);
-      pthread_mutex_unlock(&fs_mutex);
+      pthread_mutex_unlock(file_mutex);
       return -1;
     }
     fwrite(buffer, 1, n, fp);
@@ -136,7 +206,7 @@ int handle_write_command(int client_sock, const char* remote_path) {
   }
 
   fclose(fp);
-  pthread_mutex_unlock(&fs_mutex);
+  pthread_mutex_unlock(file_mutex);
 
   printf("  File saved: %s\n", full_path);
 
@@ -147,29 +217,35 @@ int handle_write_command(int client_sock, const char* remote_path) {
 }
 
 // Handle GET command from client
-
 int handle_get_command(int client_sock, const char* remote_path) {
-  char buffer[8196];
-  char full_path[512];
+  char buffer[BUFFER_SIZE];
+  char full_path[MAX_PATH];
   FILE* fp;
   long file_size;
   long bytes_sent = 0;
   int n;
   struct stat st;
 
-  snprintf(full_path, sizeof(full_path), "%s/%s", "./server_root", remote_path);
+  snprintf(full_path, sizeof(full_path), "%s/%s", ROOT_DIR, remote_path);
 
-  pthread_mutex_lock(&fs_mutex);
+  pthread_mutex_t* file_mutex = get_file_lock(full_path);
+  if (file_mutex == NULL) {
+    strcpy(buffer, "ERROR: Server busy");
+    send(client_sock, buffer, strlen(buffer), 0);
+    return -1;
+  }
+
+  pthread_mutex_lock(file_mutex);
 
   if (stat(full_path, &st) != 0) {
-    pthread_mutex_unlock(&fs_mutex);
+    pthread_mutex_unlock(file_mutex);
     snprintf(buffer, sizeof(buffer), "ERROR: File not found '%s'", remote_path);
     send(client_sock, buffer, strlen(buffer), 0);
     return -1;
   }
 
   if (S_ISDIR(st.st_mode)) {
-    pthread_mutex_unlock(&fs_mutex);
+    pthread_mutex_unlock(file_mutex);
     snprintf(buffer, sizeof(buffer), "ERROR: Path is a directory '%s'",
              remote_path);
     send(client_sock, buffer, strlen(buffer), 0);
@@ -180,20 +256,19 @@ int handle_get_command(int client_sock, const char* remote_path) {
 
   fp = fopen(full_path, "rb");
   if (fp == NULL) {
-    pthread_mutex_unlock(&fs_mutex);
+    pthread_mutex_unlock(file_mutex);
     snprintf(buffer, sizeof(buffer), "ERROR: Cannot open file '%s'",
              remote_path);
     send(client_sock, buffer, strlen(buffer), 0);
     return -1;
   }
 
-  pthread_mutex_unlock(&fs_mutex);
-
   printf("  File size: %ld bytes\n", file_size);
 
   snprintf(buffer, sizeof(buffer), "SIZE %ld", file_size);
   if (send(client_sock, buffer, strlen(buffer), 0) < 0) {
     fclose(fp);
+    pthread_mutex_unlock(file_mutex);
     return -1;
   }
 
@@ -201,10 +276,9 @@ int handle_get_command(int client_sock, const char* remote_path) {
   n = recv(client_sock, buffer, sizeof(buffer), 0);
   if (n <= 0 || strstr(buffer, "READY") == NULL) {
     fclose(fp);
+    pthread_mutex_unlock(file_mutex);
     return -1;
   }
-
-  pthread_mutex_lock(&fs_mutex);
 
   while (bytes_sent < file_size) {
     size_t to_read = sizeof(buffer);
@@ -220,34 +294,40 @@ int handle_get_command(int client_sock, const char* remote_path) {
     int sent = send(client_sock, buffer, bytes_read, 0);
     if (sent < 0) {
       fclose(fp);
-      pthread_mutex_unlock(&fs_mutex);
+      pthread_mutex_unlock(file_mutex);
       return -1;
     }
     bytes_sent += sent;
   }
 
   fclose(fp);
-  pthread_mutex_unlock(&fs_mutex);
+  pthread_mutex_unlock(file_mutex);
 
   printf("  File sent: %s (%ld bytes)\n", full_path, bytes_sent);
 
   return 0;
 }
+
+// Handle RM command from client
 int handle_rm_command(int client_sock, const char* remote_path) {
-  char buffer[8196];
-  char full_path[512];
+  char buffer[BUFFER_SIZE];
+  char full_path[MAX_PATH];
   struct stat st;
 
-  // Build full path: ROOT_DIR/remote_path
-  snprintf(full_path, sizeof(full_path), "%s/%s", "./server_root", remote_path);
+  snprintf(full_path, sizeof(full_path), "%s/%s", ROOT_DIR, remote_path);
 
-  // Delete file or directory
-  pthread_mutex_lock(&fs_mutex);
+  pthread_mutex_t* file_mutex = get_file_lock(full_path);
+  if (file_mutex == NULL) {
+    strcpy(buffer, "ERROR: Server busy");
+    send(client_sock, buffer, strlen(buffer), 0);
+    return -1;
+  }
 
-  // Check if path exists
+  pthread_mutex_lock(file_mutex);
+
   if (stat(full_path, &st) != 0) {
-    pthread_mutex_unlock(&fs_mutex);
-    snprintf(buffer, sizeof(buffer), "error! path not found '%s'", remote_path);
+    pthread_mutex_unlock(file_mutex);
+    snprintf(buffer, sizeof(buffer), "ERROR: Path not found '%s'", remote_path);
     send(client_sock, buffer, strlen(buffer), 0);
     return -1;
   }
@@ -257,45 +337,46 @@ int handle_rm_command(int client_sock, const char* remote_path) {
   if (S_ISDIR(st.st_mode)) {
     result = rmdir(full_path);
     if (result != 0) {
-      pthread_mutex_unlock(&fs_mutex);
+      pthread_mutex_unlock(file_mutex);
       if (errno == ENOTEMPTY) {
-        snprintf(buffer, sizeof(buffer), "error! directory not empty '%s'",
+        snprintf(buffer, sizeof(buffer), "ERROR: Directory not empty '%s'",
                  remote_path);
       } else {
-        snprintf(buffer, sizeof(buffer), "error!cannot remove directory '%s'",
+        snprintf(buffer, sizeof(buffer), "ERROR: Cannot remove directory '%s'",
                  remote_path);
       }
       send(client_sock, buffer, strlen(buffer), 0);
       return -1;
     }
-    printf("  directory removed: %s\n", full_path);
+    printf("  Directory removed: %s\n", full_path);
   } else {
-    // Remove file
     result = unlink(full_path);
     if (result != 0) {
-      pthread_mutex_unlock(&fs_mutex);
-      snprintf(buffer, sizeof(buffer), "error! Cannot remove file '%s'",
+      pthread_mutex_unlock(file_mutex);
+      snprintf(buffer, sizeof(buffer), "ERROR: Cannot remove file '%s'",
                remote_path);
       send(client_sock, buffer, strlen(buffer), 0);
       return -1;
     }
-    printf("  file removed: %s\n", full_path);
+    printf("  File removed: %s\n", full_path);
   }
 
-  pthread_mutex_unlock(&fs_mutex);
+  pthread_mutex_unlock(file_mutex);
+  release_file_lock(full_path);
 
-  snprintf(buffer, sizeof(buffer), "successfully removed '%s'", remote_path);
+  snprintf(buffer, sizeof(buffer), "SUCCESS: Removed '%s'", remote_path);
   send(client_sock, buffer, strlen(buffer), 0);
 
   return 0;
 }
+
 // Client handler thread function
 void* client_handler(void* arg) {
   client_info_t* info = (client_info_t*)arg;
   int client_sock = info->client_sock;
-  char client_message[8196];
+  char client_message[BUFFER_SIZE];
   char command[32];
-  char remote_path[512];
+  char remote_path[MAX_PATH];
 
   printf("Client connected at IP: %s and port: %i\n",
          inet_ntoa(info->client_addr.sin_addr),
@@ -340,15 +421,15 @@ void* client_handler(void* arg) {
     }
   } else if (strcmp(command, "RM") == 0) {
     if (strlen(remote_path) == 0) {
-      char* error_msg = "error! Missing remote path";
+      char* error_msg = "ERROR: Missing remote path";
       send(client_sock, error_msg, strlen(error_msg), 0);
     } else {
       printf("Processing RM: %s\n", remote_path);
       handle_rm_command(client_sock, remote_path);
     }
   } else {
-    char error_msg[8196];
-    snprintf(error_msg, sizeof(error_msg), "error!Unknown command '%s'",
+    char error_msg[BUFFER_SIZE];
+    snprintf(error_msg, sizeof(error_msg), "ERROR: Unknown command '%s'",
              command);
     send(client_sock, error_msg, strlen(error_msg), 0);
   }
@@ -360,14 +441,15 @@ void* client_handler(void* arg) {
 
   return NULL;
 }
-// Handle RM command from client
 
 int main(void) {
   int socket_desc;
   socklen_t client_size;
   struct sockaddr_in server_addr, client_addr;
 
-  mkdir("./server_root", 0755);
+  init_file_locks();
+
+  mkdir(ROOT_DIR, 0755);
 
   socket_desc = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -381,7 +463,7 @@ int main(void) {
   setsockopt(socket_desc, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
   server_addr.sin_family = AF_INET;
-  server_addr.sin_port = htons(2000);
+  server_addr.sin_port = htons(PORT);
   server_addr.sin_addr.s_addr = INADDR_ANY;
 
   if (bind(socket_desc, (struct sockaddr*)&server_addr, sizeof(server_addr)) <
@@ -398,8 +480,9 @@ int main(void) {
     return -1;
   }
 
-  printf("File Server running on port %d\n", 2000);
-  printf("Root directory: %s\n", "./server_root");
+  printf("File Server running on port %d\n", PORT);
+  printf("Root directory: %s\n", ROOT_DIR);
+  printf("Per file locking enabled (max %d files)\n", MAX_FILE_LOCKS);
   printf("Waiting for connections...\n");
 
   while (1) {
