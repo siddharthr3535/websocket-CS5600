@@ -1,7 +1,13 @@
-all: server client
+all: server rfs
 
 server: server.c
-	gcc server.c -o server
+	gcc -Wall -pthread server.c -o server
 
-client: client.c
-	gcc client.c -o client
+rfs: client.c
+	gcc -Wall client.c -o rfs
+
+clean:
+	rm -f server rfs
+	rm -rf server_root
+
+.PHONY: all clean
