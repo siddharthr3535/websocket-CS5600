@@ -132,7 +132,48 @@ void get_directory_path(const char* filepath, char* dirpath) {
     dirpath[0] = '\0';
   }
 }
+/*
+ * Get the next version number for a file
+ * Returns the next available version number (1, 2, 3, ...)
+ */
+int get_next_version(const char* filepath) {
+  int version = 1;
+  char version_path[MAX_PATH];
+  struct stat st;
 
+  while (1) {
+    snprintf(version_path, sizeof(version_path), "%s.v%d", filepath, version);
+    if (stat(version_path, &st) != 0) {
+      // This version doesn't exist, so use it
+      return version;
+    }
+    version++;
+  }
+}
+
+// Save current file as a versioned backup
+
+int save_version(const char* filepath) {
+  struct stat st;
+
+  // Check if file exists
+  if (stat(filepath, &st) != 0) {
+    return 0;
+  }
+
+  int version = get_next_version(filepath);
+
+  char version_path[MAX_PATH];
+  snprintf(version_path, sizeof(version_path), "%s.v%d", filepath, version);
+
+  if (rename(filepath, version_path) != 0) {
+    printf("  error! Failed to create version backup\n");
+    return -1;
+  }
+
+  printf("  Saved previous version as: %s\n", version_path);
+  return 0;
+}
 // Handle WRITE command from client
 int handle_write_command(int client_sock, const char* remote_path) {
   char buffer[BUFFER_SIZE];
@@ -183,7 +224,15 @@ int handle_write_command(int client_sock, const char* remote_path) {
     return -1;
   }
 
+  //  Lock this specific file
   pthread_mutex_lock(file_mutex);
+
+  if (save_version(full_path) != 0) {
+    pthread_mutex_unlock(file_mutex);
+    strcpy(buffer, "ERROR: Failed to save version");
+    send(client_sock, buffer, strlen(buffer), 0);
+    return -1;
+  }
 
   fp = fopen(full_path, "wb");
   if (fp == NULL) {
