@@ -34,10 +34,8 @@ void init_file_locks(void);
  */
 pthread_mutex_t* get_file_lock(const char* filepath);
 
-/**
- * Release a file lock when file is deleted
- * @param filepath - Full path to the file
- */
+// Release a file lock when file is deleted
+
 void release_file_lock(const char* filepath);
 
 // Create directories recursively

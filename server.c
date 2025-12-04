@@ -3,13 +3,7 @@
  *
  * adapted from:
  *   https://www.educative.io/answers/how-to-implement-tcp-sockets-in-c
- *
- * Features:
- *   - WRITE: Upload files with versioning
- *   - GET: Download files
- *   - RM: Delete files/directories
- *   - STOP: Shutdown server
- *   - Per-file locking for concurrent access
+
  */
 
 #include "server.h"
@@ -31,10 +25,7 @@ pthread_mutex_t lock_table_mutex = PTHREAD_MUTEX_INITIALIZER;
 // Global server socket (for clean shutdown)
 int server_socket_desc;
 
-/**
- * Initialize file lock table
- * Must be called once at server startup
- */
+// init lock table
 void init_file_locks(void) {
   for (int i = 0; i < MAX_FILE_LOCKS; i++) {
     file_locks[i].filepath[0] = '\0';
@@ -43,11 +34,8 @@ void init_file_locks(void) {
   }
 }
 
-/**
- * Get or create a mutex lock for a specific file
- * @param filepath - Full path to the file
- * @return Pointer to mutex, or NULL if lock table is full
- */
+// Get or create a mutex lock for a specific file
+
 pthread_mutex_t* get_file_lock(const char* filepath) {
   pthread_mutex_lock(&lock_table_mutex);
 
@@ -74,10 +62,8 @@ pthread_mutex_t* get_file_lock(const char* filepath) {
   return NULL;
 }
 
-/**
- * Release a file lock when file is deleted
- * @param filepath - Full path to the file
- */
+// Release a file lock when file is deleted
+
 void release_file_lock(const char* filepath) {
   pthread_mutex_lock(&lock_table_mutex);
 
@@ -92,11 +78,8 @@ void release_file_lock(const char* filepath) {
   pthread_mutex_unlock(&lock_table_mutex);
 }
 
-/**
- * Create directories recursively (like mkdir -p)
- * @param path - Directory path to create
- * @return 0 on success, -1 on failure
- */
+// Create directories recursively
+
 int create_directories(const char* path) {
   char tmp[MAX_PATH];
   char* p = NULL;
@@ -126,11 +109,8 @@ int create_directories(const char* path) {
   return 0;
 }
 
-/**
- * Extract directory path from a full file path
- * @param filepath - Full file path
- * @param dirpath - Output buffer for directory path
- */
+// Extract directory path from a full file path
+
 void get_directory_path(const char* filepath, char* dirpath) {
   strncpy(dirpath, filepath, MAX_PATH - 1);
   dirpath[MAX_PATH - 1] = '\0';
@@ -143,11 +123,8 @@ void get_directory_path(const char* filepath, char* dirpath) {
   }
 }
 
-/**
- * Get the next available version number for a file
- * @param filepath - Full path to the file
- * @return Next version number (1, 2, 3, ...)
- */
+// Get the next available version number for a file
+
 int get_next_version(const char* filepath) {
   int version = 1;
   char version_path[MAX_PATH];
@@ -162,11 +139,7 @@ int get_next_version(const char* filepath) {
   }
 }
 
-/**
- * Save current file as a versioned backup before overwriting
- * @param filepath - Full path to the file
- * @return 0 on success, -1 on failure
- */
+// save current file as versioned backeup
 int save_version(const char* filepath) {
   struct stat st;
 
@@ -192,13 +165,7 @@ int save_version(const char* filepath) {
   return 0;
 }
 
-/**
- * Handle WRITE command from client
- * Saves previous version if file exists, then writes new content
- * @param client_sock - Client socket descriptor
- * @param remote_path - Path where file will be saved on server
- * @return 0 on success, -1 on failure
- */
+// handle write command from client
 int handle_write_command(int client_sock, const char* remote_path) {
   char buffer[BUFFER_SIZE];
   char full_path[MAX_PATH];
@@ -291,13 +258,7 @@ int handle_write_command(int client_sock, const char* remote_path) {
 
   return 0;
 }
-/**
- * Handle GET command from client
- * Sends requested file to client
- * @param client_sock - Client socket descriptor
- * @param remote_path - Path of file to retrieve from server
- * @return 0 on success, -1 on failure
- */
+// handle get command from client
 int handle_get_command(int client_sock, const char* remote_path) {
   char buffer[BUFFER_SIZE];
   char full_path[MAX_PATH];
@@ -309,7 +270,7 @@ int handle_get_command(int client_sock, const char* remote_path) {
 
   snprintf(full_path, sizeof(full_path), "%s/%s", ROOT_DIR, remote_path);
 
-  // Get per-file lock
+  // Get per file lock
   pthread_mutex_t* file_mutex = get_file_lock(full_path);
   if (file_mutex == NULL) {
     strcpy(buffer, "error occured!: Server busy");
@@ -317,7 +278,7 @@ int handle_get_command(int client_sock, const char* remote_path) {
     return -1;
   }
 
-  // : Lock this specific file
+  // Lock this specific file
   pthread_mutex_lock(file_mutex);
 
   if (stat(full_path, &st) != 0) {
@@ -395,10 +356,7 @@ int handle_get_command(int client_sock, const char* remote_path) {
   return 0;
 }
 
-/**
- * Handle RM command from client
- * Deletes file or empty directory, including all versions
- */
+// handle RM command from client
 int handle_rm_command(int client_sock, const char* remote_path) {
   char buffer[BUFFER_SIZE];
   char full_path[MAX_PATH];
@@ -584,20 +542,14 @@ void* client_handler(void* arg) {
   return NULL;
 }
 
-/**
- * Main function - starts the server
- */
 int main(void) {
   socklen_t client_size;
   struct sockaddr_in server_addr, client_addr;
 
-  // Initialize file lock table
   init_file_locks();
 
-  // Create server root directory
   mkdir(ROOT_DIR, 0755);
 
-  // Create socket
   server_socket_desc = socket(AF_INET, SOCK_STREAM, 0);
 
   if (server_socket_desc < 0) {
@@ -622,7 +574,6 @@ int main(void) {
     close(server_socket_desc);
     return -1;
   }
-  printf("Done with binding\n");
 
   // Listen for connections
   if (listen(server_socket_desc, 10) < 0) {
@@ -631,14 +582,9 @@ int main(void) {
     return -1;
   }
 
-  printf("\n========================================\n");
   printf("File Server running on port %d\n", PORT);
-  printf("Root directory: %s\n", ROOT_DIR);
   printf("Per-file locking enabled (max %d files)\n", MAX_FILE_LOCKS);
-  printf("Versioning enabled\n");
-  printf("Commands: WRITE, GET, RM, STOP\n");
   printf("Waiting for connections...\n");
-  printf("========================================\n\n");
 
   // Main server loop
   while (1) {
