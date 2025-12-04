@@ -1,4 +1,3 @@
-# Makefile for Remote File System
 
 CC = gcc
 CFLAGS = -Wall -pthread

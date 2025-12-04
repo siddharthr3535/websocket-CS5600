@@ -1,0 +1,55 @@
+# Remote File System (RFS)
+
+A client-server file storage system that lets you upload, download, and delete files over TCP/IP. The server supports multiple clients at once and keeps old versions of files.
+
+## Building
+
+make
+
+This creates two programs:
+
+- `server` - the file server
+- `rfs` - the client program
+
+## Running
+
+Start the server first:
+
+./server
+
+The server runs on port 2000 and stores files in `./server_root/`.
+
+## Commands
+
+Upload a file:
+
+./rfs WRITE localfile.txt remotefile.txt
+
+Download a file:
+
+./rfs GET remotefile.txt localfile.txt
+
+Delete a file:
+./rfs RM remotefile.txt
+
+Stop the server:
+
+./rfs STOP
+
+## Connecting to a different server
+
+./rfs -h 192.168.1.100 -p 2000 WRITE myfile.txt folder/myfile.txt
+
+## How it works
+
+- Each client connection gets its own thread
+- Files are locked when being read or written so multiple clients don't corrupt data
+- When you overwrite a file, the old version is saved as `filename.v1`, `filename.v2`, etc.
+- Deleting a file also deletes all its versions
+
+## Files
+
+- `server.c` / `server.h` - server code
+- `client.c` - client code (compiles to `rfs`)
+- `Makefile` - build script
+- `test.sh` - runs all tests
