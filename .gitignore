@@ -1,0 +1,13 @@
+
+server
+rfs
+
+
+server_root/
+
+
+*.txt
+*.bin
+
+
+.DS_Store

@@ -1,10 +1,15 @@
+# Makefile for Remote File System
+
+CC = gcc
+CFLAGS = -Wall -pthread
+
 all: server rfs
 
-server: server.c
-	gcc -Wall -pthread server.c -o server
+server: server.c server.h
+	$(CC) $(CFLAGS) server.c -o server
 
 rfs: client.c
-	gcc -Wall client.c -o rfs
+	$(CC) $(CFLAGS) client.c -o rfs
 
 clean:
 	rm -f server rfs
