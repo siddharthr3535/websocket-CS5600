@@ -22,7 +22,7 @@
 file_lock_t file_locks[MAX_FILE_LOCKS];
 pthread_mutex_t lock_table_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-// Global server socket (for clean shutdown)
+// Global server socket
 int server_socket_desc;
 
 // init lock table
@@ -35,7 +35,7 @@ void init_file_locks(void) {
 }
 
 // Get or create a mutex lock for a specific file
-
+// @param filepath - Full path to the file
 pthread_mutex_t* get_file_lock(const char* filepath) {
   pthread_mutex_lock(&lock_table_mutex);
 
@@ -63,7 +63,7 @@ pthread_mutex_t* get_file_lock(const char* filepath) {
 }
 
 // Release a file lock when file is deleted
-
+// @param filepath - Full path to the file
 void release_file_lock(const char* filepath) {
   pthread_mutex_lock(&lock_table_mutex);
 
@@ -79,7 +79,7 @@ void release_file_lock(const char* filepath) {
 }
 
 // Create directories recursively
-
+// @param path - directory path to create
 int create_directories(const char* path) {
   char tmp[MAX_PATH];
   char* p = NULL;
@@ -110,7 +110,8 @@ int create_directories(const char* path) {
 }
 
 // Extract directory path from a full file path
-
+// @param filepath - full file path
+// @param dirpath - output buffer for directory path
 void get_directory_path(const char* filepath, char* dirpath) {
   strncpy(dirpath, filepath, MAX_PATH - 1);
   dirpath[MAX_PATH - 1] = '\0';
@@ -124,7 +125,7 @@ void get_directory_path(const char* filepath, char* dirpath) {
 }
 
 // Get the next available version number for a file
-
+// @param filepath - full file path
 int get_next_version(const char* filepath) {
   int version = 1;
   char version_path[MAX_PATH];
@@ -140,6 +141,7 @@ int get_next_version(const char* filepath) {
 }
 
 // save current file as versioned backeup
+// @param filepath - full file path
 int save_version(const char* filepath) {
   struct stat st;
 
@@ -166,6 +168,8 @@ int save_version(const char* filepath) {
 }
 
 // handle write command from client
+// client_sock - client socket descriptor
+// remote_path - path to save the file on the server
 int handle_write_command(int client_sock, const char* remote_path) {
   char buffer[BUFFER_SIZE];
   char full_path[MAX_PATH];
@@ -259,6 +263,8 @@ int handle_write_command(int client_sock, const char* remote_path) {
   return 0;
 }
 // handle get command from client
+// client_sock - client socket descriptor
+// remote_path - path to retrieve the file from the server
 int handle_get_command(int client_sock, const char* remote_path) {
   char buffer[BUFFER_SIZE];
   char full_path[MAX_PATH];
@@ -357,6 +363,8 @@ int handle_get_command(int client_sock, const char* remote_path) {
 }
 
 // handle RM command from client
+// client_sock - client socket descriptor
+// remote_path - path to remove on the server
 int handle_rm_command(int client_sock, const char* remote_path) {
   char buffer[BUFFER_SIZE];
   char full_path[MAX_PATH];
@@ -438,11 +446,9 @@ int handle_rm_command(int client_sock, const char* remote_path) {
   return 0;
 }
 
-/**
- * Handle STOP command from client
- * Shuts down the server gracefully
- * @param client_sock - Client socket descriptor
- */
+// Handle STOP command from client
+//@param client_sock - Client socket descriptor
+
 void handle_stop_command(int client_sock) {
   char* msg = "Success!: Server shutting down";
   send(client_sock, msg, strlen(msg), 0);
@@ -452,11 +458,9 @@ void handle_stop_command(int client_sock) {
   exit(0);
 }
 
-/**
- * Thread function to handle a single client connection
- * @param arg - Pointer to client_info_t structure
- * @return NULL
- */
+// Thread function to handle a single client connection
+// @param arg - Pointer to client_info_t structure
+
 void* client_handler(void* arg) {
   client_info_t* info = (client_info_t*)arg;
   int client_sock = info->client_sock;

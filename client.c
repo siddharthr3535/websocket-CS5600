@@ -22,6 +22,7 @@
 #define DEFAULT_HOST "127.0.0.1"
 
 // Get the size of a file
+// filename - name of the file
 long get_file_size(const char* filename) {
   struct stat st;
   if (stat(filename, &st) == 0) {
@@ -31,6 +32,7 @@ long get_file_size(const char* filename) {
 }
 
 // Create directories recursively
+// path - directory path to create
 int create_directories(const char* path) {
   char tmp[MAX_PATH];
   char* p = NULL;
@@ -61,7 +63,8 @@ int create_directories(const char* path) {
 }
 
 // Extract directory path from a full file path
-
+// filepath - full file path
+// dirpath - output buffer for directory path
 void get_directory_path(const char* filepath, char* dirpath) {
   strncpy(dirpath, filepath, MAX_PATH - 1);
   dirpath[MAX_PATH - 1] = '\0';
@@ -75,7 +78,8 @@ void get_directory_path(const char* filepath, char* dirpath) {
 }
 
 // Connect to the server
-
+// host - server hostname or IP
+// port - server port
 int connect_to_server(const char* host, int port) {
   int socket_desc;
   struct sockaddr_in server_addr;
@@ -119,7 +123,9 @@ int connect_to_server(const char* host, int port) {
 }
 
 //  Execute WRITE command ,send a local file to the server
-
+// socket_desc - connected socket to the server
+// local_path - path to local file to send
+// remote_path - path to save the file on the server
 int do_write(int socket_desc, const char* local_path, const char* remote_path) {
   char buffer[BUFFER_SIZE];
   FILE* fp;
@@ -229,7 +235,9 @@ int do_write(int socket_desc, const char* local_path, const char* remote_path) {
 }
 
 // Execute GET command , retrieve a file from the server
-
+// socket_desc - connected socket to the server
+// remote_path - path to file on the server
+// local_path - path to save the file locally
 int do_get(int socket_desc, const char* remote_path, const char* local_path) {
   char buffer[BUFFER_SIZE];
   char dir_path[MAX_PATH];
@@ -325,7 +333,8 @@ int do_get(int socket_desc, const char* remote_path, const char* local_path) {
 }
 
 //  Execute RM command - delete a file or directory on the server
-
+// socket_desc - connected socket to the server
+// remote_path - path to file or directory to delete
 int do_rm(int socket_desc, const char* remote_path) {
   char buffer[BUFFER_SIZE];
   int n;
@@ -357,8 +366,8 @@ int do_rm(int socket_desc, const char* remote_path) {
   return -1;
 }
 
-//  Execute STOP command - shutdown the server
-
+//  Execute STOP command
+// socket_desc - connected socket to the server
 int do_stop(int socket_desc) {
   char buffer[BUFFER_SIZE];
   int n;
