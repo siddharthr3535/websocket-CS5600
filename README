@@ -1,55 +1,80 @@
 # Remote File System (RFS)
 
-A client-server file storage system that lets you upload, download, and delete files over TCP/IP. The server supports multiple clients at once and keeps old versions of files.
+A client-server file storage system built with TCP sockets. Upload, download, and delete files remotely. Supports multiple clients and keeps old versions of files.
 
-## Building
+## Building and Running
 
 make
-
-This creates two programs:
-
-- `server` - the file server
-- `rfs` - the client program
-
-## Running
-
-Start the server first:
-
 ./server
 
-The server runs on port 2000 and stores files in `./server_root/`.
+This shoudl start the server on port 2000
 
 ## Commands
 
-Upload a file:
-
-./rfs WRITE localfile.txt remotefile.txt
-
-Download a file:
-
-./rfs GET remotefile.txt localfile.txt
-
-Delete a file:
-./rfs RM remotefile.txt
-
-Stop the server:
-
+./rfs WRITE local.txt remote.txt
+./rfs GET remote.txt local.txt
+./rfs RM remote.txt
 ./rfs STOP
 
-## Connecting to a different server
+Custom host/port:
 
-./rfs -h 192.168.1.100 -p 2000 WRITE myfile.txt folder/myfile.txt
+./rfs -h 192.168.1.100 -p 2000 WRITE file.txt folder/file.txt
 
-## How it works
+## How It Works
 
-- Each client connection gets its own thread
-- Files are locked when being read or written so multiple clients don't corrupt data
-- When you overwrite a file, the old version is saved as `filename.v1`, `filename.v2`, etc.
-- Deleting a file also deletes all its versions
+### Basic Flow
+
+1. Server starts and listens on port 2000
+2. Client connects, sends a command (like `WRITE folder/test.txt`)
+3. Server spawns a new thread to handle this client
+4. Server processes the command and sends back a response
+5. Client disconnects, server waits for next client
+
+### File Transfer (WRITE)
+
+When you run `./rfs WRITE test.txt folder/test.txt`:
+
+1. Client opens local file and connects to server
+2. Client sends: `WRITE folder/test.txt`
+3. Server responds: `READY`
+4. Client sends: file size
+5. Server responds: `SIZE_OK`
+6. Client sends file data in 8KB chunks
+7. Server writes chunks to disk
+8. Server responds: `SUCCESS`
+
+GET works the same way but in reverse , such in server reads file and sends chunks to client.
+
+### Multi-threading
+
+Each client gets its own thread so multiple clients can connect at the same time. Without this, one slow upload would block everyone else.
+
+### Thread Safety
+
+potential problems: Two clients writing to the same file = we have corrupted data.
+
+Solution: Each file gets a mutex lock. Before touching a file, the thread locks it. Other threads wait. When done, it unlocks. This way two clients can write to different files at the same time, but not the same file.
+
+### Versioning
+
+When you upload a file that already exists, the old one isn't deleted. Instead:
+
+First upload: test.txt
+Second upload: test.txt.v1 (old), test.txt (new)
+Third upload: test.txt.v1, test.txt.v2( this is from the second uplaod), test.txt (new)
+
+When you delete a file, all versions are deleted too using a while loop and checking for the existence of _.v_ in a loop
+
+## Testing
+
+make
+./test.sh
+
+This runs tests for all commands: WRITE, GET, RM, versioning, multi-threading, and STOP.
 
 ## Files
 
 - `server.c` / `server.h` - server code
-- `client.c` - client code (compiles to `rfs`)
+- `client.c` - client code - this compiles to rfs as given in the practicum instructions
 - `Makefile` - build script
-- `test.sh` - runs all tests
+- `test.sh` - test cases
