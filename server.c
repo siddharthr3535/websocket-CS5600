@@ -421,7 +421,7 @@ int handle_rm_command(int client_sock, const char* remote_path) {
     }
     printf("  File removed: %s\n", full_path);
 
-    // Delete all versions (.v1, .v2, .v3, ...)
+    // Delete all versions
     int version = 1;
     while (1) {
       snprintf(version_path, sizeof(version_path), "%s.v%d", full_path,
